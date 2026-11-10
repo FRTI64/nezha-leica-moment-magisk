@@ -3,6 +3,11 @@
 This file is inside the flashable zip. Magisk deletes `README.md` from the installed
 module directory after installation, so keep a copy of the zip if you need it later.
 
+> **DEPRECATED variant.** This README ships with the two *property-injection* variants
+> (`PropsOnly` / `Full`), which set Leica/region system properties via Magisk. If you do not
+> want property spoofing, use the recommended **`LeicaMoment_nezha_v1.2.0_CameraOnly.zip`**
+> instead (CN camera APK only, no property changes).
+
 Full documentation, evidence, risks and troubleshooting: the `README.md` shipped next
 to the built zips (`work/leica/module/README.md` in the research workspace).
 
@@ -10,9 +15,11 @@ to the built zips (`work/leica/module/README.md` in the research workspace).
 
 * Module id: `nezha_leica_moment`
 * Variants (mutually exclusive, same module id -- flash one):
-  * `..._PropsOnly.zip` -- properties only, no APK payload. Smaller/safer.
+  * `..._PropsOnly.zip` -- properties only, no APK payload. Smaller/safer. (DEPRECATED: props)
   * `..._Full.zip` -- properties + CN `MiuiCamera.apk` (6.7.000280.0) replacing
     `/product/priv-app/MiuiCamera/MiuiCamera.apk`, stale ART oat/vdex hidden.
+    (DEPRECATED: props)
+  * `..._v1.2.0_CameraOnly.zip` -- RECOMMENDED: CN camera APK only, **no property changes**.
 * Runtime config: `/data/adb/leica_moment/config.env` (created on first boot)
   * `REGION_SPOOF=1` -- spoof `ro.miui.build.region=cn` (needed by the editor CTA;
     changes ROM region behaviour, see the main README)
