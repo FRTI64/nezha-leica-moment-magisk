@@ -1,0 +1,10 @@
+# 构建产物（Full 变体含约 200MB 商业 APK 载荷，不入库）
+dist/
+*.zip
+# 本地从官方 ROM 提取的输入（不入库）
+*.apk
+*.img
+*.tgz
+*.zip
+# 系统文件
+.DS_Store
