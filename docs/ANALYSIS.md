@@ -306,6 +306,64 @@ ro.miui.build.region=cn
 | Gallery Rust 内置 hyper HTTP 客户端 | 当前 legendV2 云端调用在 mediaeditor Java（已确认）；若迁移，Java Cookie 注入将失效，需要重新评估 |
 | LSPosed 模块对 gallery 进程新增 SystemProperties 伪装（v1.2.0） | 覆盖 gallery 中通过 Java/JNI 桥读取属性的路径；native 直读仍以 Magisk 属性层为准 |
 
-> 结论：在 Rust 组件较多的 HyperOS 4 上，**属性类门禁以 Magisk resetprop 为可靠底座，LSPosed 模块负责 Java 侧判定（editor provider）与 Cookie 注入**；两者组合使用最稳。
+> 结论：在 Rust 组件较多的 HyperOS 4 上，属性类门禁可由 Magisk resetprop 覆盖 Rust/native 读取；但若用户不接受属性伪装，请改用下面的「无属性伪装方案」。
+
+---
+
+## 11. 无属性伪装方案（v2.0 起，用户要求"不伪装属性"时使用）
+
+> 背景：用户明确**不希望伪装系统属性**（既不用 `resetprop` 改 `ro.*`，也不 hook `android.os.SystemProperties`）。因此改为**直接 hook App 的门禁判定方法**——不改任何属性值，只让判定函数返回"可用"。
+
+### 11.1 原理：hook 判定链的"汇合点"而不是属性
+
+国际版 `MediaEditorProviderForGallery` 计算 `method_is_legend_available` 时调用：
+```
+mx.a.g()Z  &&  r21.e.b()Z
+```
+- `mx.a.g()` 内部检查 `Build.DEVICE=="nezha" && ro.theme_customize=="LCC"`（`mx/a$i.b()`）；
+- `r21.e.b()` 内部检查 `ro.miui.build.region=="cn"`。
+国行 2.10.43.0.6 语义相同：`rt.a.g()Z && ah0.b.g()Z`。
+
+无属性伪装方案直接 hook 这两个**布尔判定方法**返回 `true`：
+| 版本 | hook 目标 | 说明 |
+|---|---|---|
+| 国际版 2.10.40.4.8-global | `mx.a.g()Z`、`r21.e.b()Z`（static） | 覆盖 `method_is_legend_available` 与 `CreateLegendV2TaskParams.isLCC` |
+| 国行 2.10.43.0.6 | `rt.a.g()Z`、`ah0.b.g()Z` | 同上 |
+
+不 hook `bx.t.a()/ft.s.a()`（传奇一瞬分支）：当 `g()` 被强制为 true 后，该分支自然为 false，避免副作用。
+**整个模块不再出现任何 `resetprop`、`SystemProperties` hook、`ro.*` 赋值。** 系统其它进程完全不受影响，也不存在 region 伪装带来的 OTA/区域服务副作用。
+
+### 11.2 Cookie / 登录（与属性无关，保持不变）
+- Cookie 注入：hook `go.e.b()` / `bs.e.b()`（STS Cookie 提供者）+ 静态字段缓存修正；
+- 未登录兜底：hook `ga0.e.a(Context)` / `be0.e.a(Context)`；
+- 登录：WebView 抓取 / 系统小米账号登录按钮 / 已登录后自动捕获回填。
+
+### 11.3 相册（Gallery）
+- Gallery 的 Rust 能力探测通过 ContentProvider 调用 mediaeditor 的 Java Provider → 判定点被上述 hook 覆盖；
+- **仍需清除一次相册能力缓存**（SharedPreferences 缓存："capabilities SP schema mismatch" / "Device capabilities cache invalidated"）：`设置→应用→相册→存储→清除缓存/数据` 或 `adb shell pm clear com.miui.gallery`（谨慎）；
+- Gallery 自身不安装任何 hook（无属性伪装需求）。
+
+### 11.4 相机端（如需要「徕卡一瞬」拍摄）
+相机 UI 可见性同样由 CN 相机内部的属性缓存决定（`Va/b` 等）。无属性伪装方案改为**直接 hook 相机内部的判定方法**（全部证据见 `docs/camera_hook_targets.md`），并配合 **Magisk `CameraOnly` 变体**（只挂载国行 MiuiCamera APK，不注入任何属性）：
+
+| # | hook 目标（CN MiuiCamera 6.7.000280.0） | 签名 | 强制返回 | 作用 |
+|---|---|---|---|---|
+| H1 | `com.android.camera.features.mode.legendary.LegendaryEnter` | `support()Z`（instance） | `true` | 让「徕卡一瞬」模式（id `0x100`）出现在模式列表（模式表构建器 `Lu3/a` 对每个 entry 调 `support()` 过滤，见 `u3/a.smali:420`） |
+| H2 | `Te.c` | `W()Z`（static） | `true` | 相机全局"isLeicaCustomize"判定（原实现：`Va/b->u.equals("LCC") && !Va/b->w`，即读缓存后的 `ro.theme_customize` 与 debug 开关）；classes4.dex 中 15 处 Leica UI/水印/变焦 UI 调用点；也是 H1 背后 `h5()` 的最终依赖 |
+| H3（fallback） | `L뾓뾟뾝뿞뾝뾙뿞뾔뾕뾆뾙뾓뾕뿞뾾뾕뾊뾘뾑;` | `h5()Z`（instance） | `true` | 若 H1 无法解析时兜底 |
+
+- `Va/b` 的属性缓存字段是 `static final`（不能 hook 字段），因此 **hook 读取这些字段的方法**（H2）即可完全绕开属性判断，且不需要任何 `SystemProperties` hook/resetprop。
+- 相机侧残余风险（Java hook 无法解决）：**vendor camera HAL 的 legendary caps/session params**（M9 CCD / M3 MONOPAN / M10R 处理在 vendor 管线中；APK 只发送 `com.xiaomi.sessionparams.legendMode`/`legendMode.capsInfo`/`getLegendBokehCapsInfo`）。若 HAL 不支持，UI 可出现但实际徕卡风格可能缺失/回退；`LegendaryNativeCaptureBridge` 等类只被引用、未在 APK dex 定义（动态/插件/native），亦为风险项。
+- 国际版 6.6 相机等价 hook 未做（本方案使用 CN 6.7 APK，无需 global 版）。
+
+```
+Magisk CameraOnly 变体（无属性层，仅国行相机 APK） + LSPosed v2.1+（scope: com.android.camera）H1/H2 直接 hook
+```
+
+若只需要**相册编辑的"二次增强"云端入口**，则**无需 Magisk 模块**：LSPosed v2.0+ 即可（scope 仅 `com.miui.mediaeditor`）。
+
+### 11.5 与旧方案（属性伪装）的关系
+- 旧 `PropsOnly/Full` Magisk 变体与 LSPosed v1.x 的 `SystemProperties` hook 仍保留在仓库中作为参考，但**已标记 deprecated**（用户要求不再使用属性伪装）。
+- 服务端权益/硬件认证限制不变：即使客户端门禁全部打开，云端任务仍可能被服务端拒绝。
 
 > 免责声明：本项目仅用于个人设备上的本地 ROM 分析与自用修改；所有 ROM/APK 版权归小米/徕卡等权利人所有；请勿分发提取的商业 APK/资源，请勿用于绕过计费或权益。
