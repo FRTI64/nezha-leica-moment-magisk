@@ -61,14 +61,22 @@
 
 ---
 
-## 4. 相关项目
+## 4. 特别注意：HyperOS 4 的 Rust 组件
+
+HyperOS 4 有大量组件由 Rust 重写（`/system_ext/lib64` 中 102 个 `libhyper_os_*` 库、`libhyper_os_flutter.so`；`hyperos.rustruntime.jar` 只是 612 B 桩，真实运行时在 native）。本仓库的 `docs/ANALYSIS.md §10` 有实测证据与影响分析，关键结论：
+
+- **属性类门禁（`ro.theme_customize` / `ro.miui.build.region`）优先用 Magisk resetprop 属性层**：它修改真实属性区，Rust/native 读取也能看到；Xposed Java hook 只能覆盖 Java 读取路径。
+- 相册（`com.miui.gallery`）是 **Flutter + Rust**（`libapp.so` + 36.5 MB `libapp_gallery.so`，无 classes.dex）；其能力探测调用 mediaeditor Provider（Java，hook 有效），但结果会缓存在 SharedPreferences → 开启属性伪装后需**清除一次相册缓存/数据**。
+- 相机/相册编辑的「徕卡一瞬」云端路径在当前版本仍是 Java（已逐行确认），不受 Rust 化影响。
+
+## 5. 相关项目
 
 - 同功能的 **LSPosed 模块源码**（进程级门禁伪装 + 小米账号 Cookie 登录/注入）：<https://github.com/FRTI64/nezha-leica-moment-lsposed>
 - 两者可二选一或组合使用：Magisk 模块管相机 APK/属性；LSPosed 模块管编辑器进程门禁 + Cookie。
 
 ---
 
-## 5. 免责声明
+## 6. 免责声明
 
 - 本仓库内容为**本地 ROM 静态分析结果**，所有类名/字符串/端点均来自用户自有 ROM 解包与反编译；不提供、不分发任何官方 ROM/APK/商业资源。
 - 不提供任何服务端权益、计费、设备白名单或硬件认证的绕过；云端功能是否可用由 Xiaomi 服务端决定。
