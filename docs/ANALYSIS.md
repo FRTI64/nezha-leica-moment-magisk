@@ -281,4 +281,31 @@ ro.miui.build.region=cn
 - **验证**：APK 可复现构建（两次 sha256 一致）、apksigner v1+v2+v3 通过、`aapt2 dump badging` 正常、dex 内不打包 `de.robv.android.xposed` API 类、hook 目标均有两版 smali 证据；**无真机运行验证**，云端最终是否被服务端接受无法离线验证。
 - **与 Magisk 模块共存**：两者可同时使用（Magisk 管相机 APK/属性；LSPosed 管编辑器进程门禁与 Cookie）。若两者都启用了门禁层，建议只保留一个（例如用 Magisk 模块装相机、用 LSPosed 做编辑器 + Cookie，并把 Magisk 的 `REGION_SPOOF` 关闭）。
 
+## 10. HyperOS 4 的 Rust 组件及其影响（重要）
+
+> 用户提示：HyperOS 4 中部分组件由 Rust 重写。本节为实际 ROM 验证结果与对移植策略的影响。
+
+### 10.1 实测发现
+
+- **系统级 Rust 运行时（大量）**：`/system_ext/lib64` 中有 **102 个** Rust 组件库，命名规则 `libhyper_os_<domain>_{public,private}.so`（如 `libhyper_os_account_*`、`libhyper_os_network_*`、`libhyper_os_app_*`、`libhyper_os_binder_*`、`libhyper_os_axml_*`、`libhyper_os_backup_*`、`libhyper_os_flutter.so` 等）；`/system/lib64` 还有 `libhyper_os_sys_cc_bindgen.dylib.so`、`libhyper_spawner_cc_bindgen.dylib.so`、大量 `lib*_rust.dylib.so`。
+- **`hyperos.rustruntime.jar` 只是桩**：`/system_ext/framework/hyperos.rustruntime.jar` 大小仅 898 B，dex 中唯一类是 `Lrust/core/runtime/Empty;`——真实 Rust 运行时在 native 库中。
+- **MIUIGallery = Flutter + Rust**：`MIUIGallery.apk` 内**没有 classes.dex**，逻辑在 `lib/arm64-v8a/libapp.so`（Dart AOT）+ `libapp_gallery.so`（36.5 MB Rust，`flutter_rust_bridge`，crate `app_gallery`，内部使用 `hyper_api` 与 `hyper 1.7.0` HTTP 客户端）。其中：
+  - **能力探测在 Rust 中实现**：`src/api/front_end/media_editor_capability.rs` 通过 ContentProvider（authority `com.miui.mediaeditor.api`）调用 `method_request_function_list` / `method_is_legend_available` / `method_is_xm_legend_available` 等——Provider 运行在 mediaeditor（Java）进程，因此 LSPosed 对 mediaeditor 的 Java hook 仍然作用在真正的判定点上。
+  - **能力结果有 SharedPreferences 缓存**：Rust 字符串含 `capabilities SP schema mismatch` / `Device capabilities cache invalidated` / `invalidate_device_capabilities_cache` → **开启模块后旧的“不可用”缓存可能仍生效，需要一次性清除相册数据/缓存**。
+  - Gallery Rust 自身还读取 `IS_INTERNATIONAL_BUILD`、`VERSION.RELEASE`、`MIUI_VERSION`、`CUSTOMIZED_REGION`、`ro.miui.build.region`、`ro.product.mod_device`（经 Rust/JNI/MethodChannel 桥，`SystemPropertyMethodChannel`，channel `com.android.os.system.properties.method.channel`），并带有自己的 Rust `cloud_control` 策略。
+- **mediaeditor（本次核心）**：legend 门禁/云端/Cookie 路径均为 Java（smali 已逐行确认），APK dex 中未发现 Rust/hyper 引用 → Java hook 与 Cookie 注入有效。
+- **相机**：MiuiCamera 6.6/6.7 的 dex 未发现 Rust/hyper 引用；`/odm/etc/camera` 的徕卡滤镜参数由 HAL/native 侧处理，不受属性 hook 影响。
+
+### 10.2 对移植策略的影响与对策
+
+| 影响 | 对策 |
+|---|---|
+| Java（LSPosed）hook 只能覆盖 Java 侧；**Rust/native 读取系统属性不会经过 Java `SystemProperties`**（可能直接 `__system_property_get`） | 属性类门禁（`ro.theme_customize`/`ro.miui.build.region` 等）优先用 **Magisk resetprop 全局属性层**（本项目已有 PropsOnly 变体），它修改真实属性区，Rust/native 也会看到；Java 侧 hook 作为补充 |
+| Gallery 能力缓存可能保留旧结果 | 启用后一次性 `设置→应用→相册→存储→清除数据`（或 `adb shell pm clear com.miui.gallery`，会清相册本地设置）再打开相册 |
+| Gallery 内部 Rust 逻辑无法被 Xposed 覆盖（Dart/Rust 非 ART 方法） | 目标功能（legend 入口判定/legendV2 云端）实际判定点在 mediaeditor Java Provider + Java OkHttp，已被覆盖；如未来版本把 legend 调用迁入 Gallery Rust，则需改用 Magisk 属性层（甚至 native hook） |
+| Gallery Rust 内置 hyper HTTP 客户端 | 当前 legendV2 云端调用在 mediaeditor Java（已确认）；若迁移，Java Cookie 注入将失效，需要重新评估 |
+| LSPosed 模块对 gallery 进程新增 SystemProperties 伪装（v1.2.0） | 覆盖 gallery 中通过 Java/JNI 桥读取属性的路径；native 直读仍以 Magisk 属性层为准 |
+
+> 结论：在 Rust 组件较多的 HyperOS 4 上，**属性类门禁以 Magisk resetprop 为可靠底座，LSPosed 模块负责 Java 侧判定（editor provider）与 Cookie 注入**；两者组合使用最稳。
+
 > 免责声明：本项目仅用于个人设备上的本地 ROM 分析与自用修改；所有 ROM/APK 版权归小米/徕卡等权利人所有；请勿分发提取的商业 APK/资源，请勿用于绕过计费或权益。
